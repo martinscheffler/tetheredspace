@@ -7,7 +7,7 @@ import
 type
   SDLException = object of Exception
 
-  Input {.pure.} = enum none, left, right, accel, restart, quit
+  Input {.pure.} = enum none, left, right, accel, tether, restart, quit
 
   Collision {.pure.} = enum x, y, corner
 
@@ -30,6 +30,8 @@ type
     rot: float
     rotSpeed: float 
     accel: float 
+    tether: Point2d
+    isTethered: bool
 
   Map = ref object
     texture: TexturePtr
@@ -62,6 +64,7 @@ template sdlFailIf(cond: typed, reason: string) =
 
 
 proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
+
   var
     clip = rect(0, 0, tileSize.x, tileSize.y)
     dest = rect(0, 0, tileSize.x, tileSize.y)
@@ -76,17 +79,25 @@ proc renderMap(renderer: RendererPtr, map: Map, camera: Vector2d) =
 
     renderer.copy(map.texture, unsafeAddr clip, unsafeAddr dest)
 
+
 proc renderPlayer(renderer : RendererPtr, player: Player, camera: Vector2d) =
   let
     x = player.pos.x.cint - camera.x.cint
     y = player.pos.y.cint - camera.y.cint
+    tx = player.tether.x.cint - camera.x.cint
+    ty = player.tether.y.cint - camera.y.cint
     target = rect(x - 32, y - 32, 64, 64)
-    rot = player.rot * 180.0f / 3.1415f
+    rot = player.rot * 180.0f / 3.1415f 
   renderer.copyEx(player.texture, nil, unsafeAddr target, angle = rot,
                       center = nil, flip = SDL_FLIP_NONE)
+  if player.isTethered:
+    renderer.setDrawColor(255,0,0)
+    renderer.drawLine(x, y, tx, ty)
+
 
 proc newTextCache: TextCache =
   new result
+
 
 proc renderText(renderer: RendererPtr, font: FontPtr, text: string,
                 x, y, outline: cint, color: Color): CacheLine =
@@ -102,6 +113,7 @@ proc renderText(renderer: RendererPtr, font: FontPtr, text: string,
   sdlFailIf result.texture.isNil: "Could not create texture from rendered text"
 
   surface.freeSurface()
+
 
 proc renderText(game: Game, text: string, x, y: cint, color: Color,
                 tc: TextCache) =
@@ -122,10 +134,12 @@ proc renderText(game: Game, text: string, x, y: cint, color: Color,
     game.renderer.copyEx(tc.cache[i].texture, source, dest,
                          angle = 0.0, center = nil)
 
+
 template renderTextCached(game: Game, text: string, x, y: cint, color: Color) =
   block:
     var tc {.global.} = newTextCache()
     game.renderText(text, x, y, color, tc)
+
 
 proc restartPlayer(player: Player) =
   player.pos = point2d(170, 500)
@@ -135,17 +149,22 @@ proc restartPlayer(player: Player) =
   player.accel = 0.2f
   player.time.begin = -1
   player.time.finish = -1
+  player.tether = point2d(0, 0)
+  player.isTethered = false 
+
 
 proc newTime: Time =
   new result
   result.finish = -1
   result.best = -1
 
+
 proc newPlayer(texture: TexturePtr): Player =
   new result
   result.texture = texture
   result.time = newTime()
   result.restartPlayer()
+
 
 proc newMap(texture: TexturePtr, file: string): Map =
   new result
@@ -169,6 +188,7 @@ proc newMap(texture: TexturePtr, file: string): Map =
     result.width = width
     inc result.height
 
+
 proc newGame(renderer: RendererPtr): Game =
   new result
   result.renderer = renderer
@@ -179,14 +199,17 @@ proc newGame(renderer: RendererPtr): Game =
   result.player = newPlayer(renderer.loadTexture("player.png"))
   result.map = newMap(renderer.loadTexture("map.png"), "default.map")
 
+
 proc toInput(key: Scancode): Input =
   case key
   of SDL_SCANCODE_A: Input.left
   of SDL_SCANCODE_D: Input.right
-  of SDL_SCANCODE_SPACE: Input.accel
+  of SDL_SCANCODE_W: Input.accel
+  of SDL_SCANCODE_SPACE: Input.tether
   of SDL_SCANCODE_R: Input.restart
   of SDL_SCANCODE_Q: Input.quit
   else: Input.none
+
 
 proc handleInput(game: Game) =
   var event = defaultEvent
@@ -201,18 +224,23 @@ proc handleInput(game: Game) =
     else:
       discard
 
+
 proc formatTime(ticks: int): string =
   let mins = (ticks div 50) div 60
   let secs = (ticks div 50) mod 60
   interp"${mins:02}:${secs:02}"
 
+
 proc formatTimeExact(ticks: int): string =
   let cents = (ticks mod 50) * 2
   interp"${formatTime(ticks)}:${cents:02}"
 
+
 proc render(game: Game, tick: int) =
   # Draw over all drawings of the last frame with the default color
+  game.renderer.setDrawColor(r = 110, g = 132, b = 174)
   game.renderer.clear()
+  
   # Actual drawing here
   game.renderer.renderMap(game.map, game.camera)
   game.renderer.renderPlayer(game.player, game.camera)
@@ -231,6 +259,7 @@ proc render(game: Game, tick: int) =
   # Show the result on screen
   game.renderer.present()
 
+
 proc getTile(map: Map, x, y: int): uint8 =
   let
     nx = clamp(x div tileSize.x, 0, map.width - 1)
@@ -239,14 +268,18 @@ proc getTile(map: Map, x, y: int): uint8 =
 
   map.tiles[pos]
 
+
 proc getTile(map: Map, pos: Point2d): uint8 =
   map.getTile(pos.x.round.int, pos.y.round.int)
+
 
 proc isSolid(map: Map, x, y: int): bool =
   map.getTile(x, y) notin {air, start, finish}
 
+
 proc isSolid(map: Map, point: Point2d): bool =
   map.isSolid(point.x.round.int, point.y.round.int)
+
 
 proc testBox(map: Map, pos: Point2d, size: Vector2d): bool =
   let size = size * 0.5
@@ -255,6 +288,24 @@ proc testBox(map: Map, pos: Point2d, size: Vector2d): bool =
     map.isSolid(point2d(pos.x + size.x, pos.y - size.y)) or
     map.isSolid(point2d(pos.x - size.x, pos.y + size.y)) or
     map.isSolid(point2d(pos.x + size.x, pos.y + size.y))
+
+
+proc trace(map: Map, pos: var Point2d, dir: Vector2d): bool {.discardable.} =
+  let distance = dir.len
+  let maximum = distance.int
+  result = false
+  if distance < 0:
+    return
+
+  let fraction = 1.0 / float(maximum + 1)
+
+  for i in 0 .. maximum:
+    var newPos = pos + dir * fraction * float(i)
+    if map.isSolid(point2d(newPos.x, newPos.y)):
+      pos = newpos
+      result = true
+      return
+
 
 proc moveBox(map: Map, pos: var Point2d, vel: var Vector2d,
              size: Vector2d): set[Collision] {.discardable.} =
@@ -291,6 +342,7 @@ proc moveBox(map: Map, pos: var Point2d, vel: var Vector2d,
 
     pos = newPos
 
+
 proc physics(game: Game) =
   if game.inputs[Input.restart]:
     game.player.restartPlayer()
@@ -300,11 +352,25 @@ proc physics(game: Game) =
   if game.inputs[Input.right]: 
     game.player.rot += game.player.rotSpeed  
 
+  let heading = vector2d(sin(game.player.rot), -cos(game.player.rot))
+
   if game.inputs[Input.accel]:
-    game.player.vel.y -= cos(game.player.rot) * game.player.accel 
-    game.player.vel.x += sin(game.player.rot) * game.player.accel 
+    game.player.vel.x+= heading.x * game.player.accel 
+    game.player.vel.y += heading.y * game.player.accel 
   
+  if game.inputs[Input.tether]:
+    var t = game.player.pos
+    var h = heading
+    h *= 500
+    let hasCollision = game.map.trace(t, h)
+   # if game.player.isTethered == false and card(collisions) != 0:
+    game.player.isTethered = true
+    game.player.tether = t
+  else:
+    game.player.isTethered = false  
+    
   game.map.moveBox(game.player.pos, game.player.vel, playerSize)
+
 
 proc moveCamera(game: Game) =
   const halfWin = float(windowSize.x div 2)
@@ -319,6 +385,7 @@ proc moveCamera(game: Game) =
   else:
     game.camera.x = game.player.pos.x - halfWin
 
+
 proc logic(game: Game, tick: int) =
   template time: expr = game.player.time
   case game.map.getTile(game.player.pos)
@@ -331,6 +398,7 @@ proc logic(game: Game, tick: int) =
       if time.best < 0 or time.finish < time.best:
         time.best = time.finish
   else: discard
+
 
 proc main =
   sdlFailIf(not sdl2.init(INIT_VIDEO or INIT_TIMER or INIT_EVENTS)):
