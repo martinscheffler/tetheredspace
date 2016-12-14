@@ -1,3 +1,4 @@
+# Started from: 
 # https://hookrace.net/blog/writing-a-2d-platform-game-in-nim-with-sdl2/#9.-text-caching
 
 import
@@ -32,7 +33,7 @@ type
     accel: float 
     tether: Point2d
     isTethered: bool
-    tetherSpeed: float
+    tetherLength: float
  
   Map = ref object
     texture: TexturePtr
@@ -152,7 +153,6 @@ proc restartPlayer(player: Player) =
   player.time.finish = -1
   player.tether = point2d(0, 0)
   player.isTethered = false 
-  player.tetherSpeed = 0
 
 proc newTime: Time =
   new result
@@ -361,24 +361,22 @@ proc physics(game: Game) =
   
   if game.inputs[Input.tether]:
     var t = game.player.pos
-    var h = heading
-    h *= 500
-    let hasCollision = game.map.trace(t, h)
+    let hasCollision = game.map.trace(t, heading * 500)
     if hasCollision and not game.player.isTethered:
       game.player.isTethered = true
       game.player.tether = t
-      var newvel = vector2d(game.player.pos.y - game.player.tether.y,
-                          - game.player.pos.x + game.player.tether.x)
-      normalize(newvel)
-      game.player.tetherSpeed = dot(game.player.vel, newvel)
+      game.player.tetherLength = len(game.player.pos - t)
     
   else:
     game.player.isTethered = false  
   
   if game.player.isTethered: 
-    let newvel = vector2d(game.player.pos.y - game.player.tether.y,
-                          - game.player.pos.x + game.player.tether.x)
-    game.player.vel = newvel * (game.player.tetherSpeed / len(newvel)) 
+    var orth = vector2d(game.player.pos.y - game.player.tether.y,
+                              - game.player.pos.x + game.player.tether.x)
+    
+    if len(orth) > game.player.tetherLength:
+      orth.normalize()
+      game.player.vel = orth * dot(game.player.vel, orth) 
       
   game.map.moveBox(game.player.pos, game.player.vel, playerSize)
 
